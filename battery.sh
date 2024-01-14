@@ -20,6 +20,7 @@ pidfile=$configfolder/battery.pid
 logfile=$configfolder/battery.log
 maintain_percentage_tracker_file=$configfolder/maintain.percentage
 daemon_path=$HOME/Library/LaunchAgents/battery.plist
+calibrate_pidfile=$configfolder/calibrate.pid
 
 ## ###############
 ## Housekeeping
@@ -64,6 +65,9 @@ Usage:
   battery adapter SETTING[on/off]
     manually set the adapter to (not) charge even when plugged in
     eg: battery adapter off
+
+  battery calibrate 
+    calibrate the battery by discharding it to 15%, then recharging it to 100%, and keeping it there for 1 hour
 
   battery charge LEVEL[1-100]
     charge the battery to a certain percentage, and disable charging when that percentage is reached
@@ -411,6 +415,12 @@ fi
 
 # Maintain at level
 if [[ "$action" == "maintain_synchronous" ]]; then
+	
+	# Checking if the calibration process is running
+	if test -f "$calibrate_pidfile"; then
+		pid=$(cat "$calibrate_pidfile" 2>/dev/null)
+		log "🚨 Calibration is running, please run 'battery calibrate stop' or wait for it to finish"
+	fi
 
 	# Recover old maintain status if old setting is found
 	if [[ "$setting" == "recover" ]]; then
@@ -485,6 +495,11 @@ if [[ "$action" == "maintain" ]]; then
 		kill $pid &>/dev/null
 	fi
 
+	if test -f "$calibrate_pidfile"; then
+		pid=$(cat "$calibrate_pidfile" 2>/dev/null)
+		log "🚨 Calibration is running, please run 'battery calibrate stop' or wait for it to finish"
+	fi
+
 	if [[ "$setting" == "stop" ]]; then
 		log "Killing running maintain daemons & enabling charging as default state"
 		rm $pidfile 2>/dev/null
@@ -526,6 +541,64 @@ if [[ "$action" == "maintain" ]]; then
 
 	exit 0
 
+fi
+
+# Battery calibration
+if [[ "$action" == "calibrate_synchronous" ]]; then
+	log "Starting calibration"
+
+	# Stop the maintaining
+	battery maintain stop
+
+	# Discharge battery to 15%
+	battery discharge 15
+
+	while true; do
+		log "checking if at 100%"
+		# Check if battery level has reached 100%
+		if battery status | head -n 1 | grep -q "Battery at 100%"; then
+			break
+			else
+			sleep 300
+			continue
+		fi
+	done
+
+	# Wait before discharging to target level
+	log  "reached 100%, maintaining for 1 hour"
+	sleep 3600
+
+	# Discharge battery to 80%
+	battery discharge 80
+
+	# Recover old maintain status
+	battery maintain recover
+	exit 0
+fi
+
+# Asynchronous battery level maintenance
+if [[ "$action" == "calibrate" ]]; then
+	# Kill old process silently
+	if test -f "$calibrate_pidfile"; then
+		pid=$(cat "$calibrate_pidfile" 2>/dev/null)
+		kill $pid &>/dev/null
+	fi
+
+	if [[ "$setting" == "stop" ]]; then
+		log "Killing running calibration daemon"
+		kill $calibrate_pidfile &>/dev/null
+		rm $calibrate_pidfile 2>/dev/null
+		
+		exit 0
+	fi
+
+	# Start calibration script
+	log "Starting calibration script"
+	nohup battery calibrate_synchronous >>$logfile &
+
+	# Store pid of calibration process and setting
+	echo $! >$calibrate_pidfile
+	pid=$(cat "$calibrate_pidfile" 2>/dev/null)
 fi
 
 # Status logger
